@@ -3,6 +3,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Collections.Specialized;
+using System.IO;
 using System.Linq;
 using System.Net;
 using System.Text;
@@ -71,6 +72,9 @@ namespace SimpleRouter
 
             foreach (Route route in routes)
             {
+                if (!(route.Method == "*" || route.Method.Equals(request.Method, StringComparison.InvariantCultureIgnoreCase)))
+                    continue;
+
                 Match match = route.Regex.Match(request.URL.Path);
                 if (match.Success)
                 {
@@ -141,123 +145,32 @@ namespace SimpleRouter
             HostName = uri.Host;
             Port = uri.IsDefaultPort ? null : (int?)uri.Port;
             BasePath = absolutePath;
-            Path = UrlDecode(absolutePath, Encoding.UTF8);
+            Path = System.Web.HttpUtility.UrlDecode(absolutePath);
             Query = uri.Query;
-        }
-
-        private static void WriteCharBytes(IList buf, char ch, Encoding e)
-        {
-            if (ch > 255)
-            {
-                foreach (byte b in e.GetBytes(new char[] { ch }))
-                    buf.Add(b);
-            }
-            else
-                buf.Add((byte)ch);
-        }
-
-        private static int GetInt(byte b)
-        {
-            char c = (char)b;
-            if (c >= '0' && c <= '9')
-                return c - '0';
-
-            if (c >= 'a' && c <= 'f')
-                return c - 'a' + 10;
-
-            if (c >= 'A' && c <= 'F')
-                return c - 'A' + 10;
-
-            return -1;
-        }
-
-        private static int GetChar(string str, int offset, int length)
-        {
-            int val = 0;
-            int end = length + offset;
-            for (int i = offset; i < end; i++)
-            {
-                char c = str[i];
-                if (c > 127)
-                    return -1;
-
-                int current = GetInt((byte)c);
-                if (current == -1)
-                    return -1;
-                val = (val << 4) + current;
-            }
-
-            return val;
-        }
-
-        private static string UrlDecode(string s, Encoding e)
-        {
-            if (null == s)
-                return null;
-
-            if (s.IndexOf('%') == -1 && s.IndexOf('+') == -1)
-                return s;
-
-            if (e == null)
-                e = Encoding.UTF8;
-
-            long len = s.Length;
-            var bytes = new List<byte>();
-            int xchar;
-            char ch;
-
-            for (int i = 0; i < len; i++)
-            {
-                ch = s[i];
-                if (ch == '%' && i + 2 < len && s[i + 1] != '%')
-                {
-                    if (s[i + 1] == 'u' && i + 5 < len)
-                    {
-                        // unicode hex sequence
-                        xchar = GetChar(s, i + 2, 4);
-                        if (xchar != -1)
-                        {
-                            WriteCharBytes(bytes, (char)xchar, e);
-                            i += 5;
-                        }
-                        else
-                            WriteCharBytes(bytes, '%', e);
-                    }
-                    else if ((xchar = GetChar(s, i + 1, 2)) != -1)
-                    {
-                        WriteCharBytes(bytes, (char)xchar, e);
-                        i += 2;
-                    }
-                    else
-                    {
-                        WriteCharBytes(bytes, '%', e);
-                    }
-                    continue;
-                }
-
-                if (ch == '+')
-                    WriteCharBytes(bytes, ' ', e);
-                else
-                    WriteCharBytes(bytes, ch, e);
-            }
-
-            byte[] buf = bytes.ToArray();
-            bytes = null;
-            return e.GetString(buf);
         }
     }
 
     public class Request
     {
         public URL URL { get; set; }
+        public string Method { get; set; }
         public Dictionary<string, string> Keys { get; set; }
         public NameValueCollection Query { get; set; }
+        public Stream InputStream { get; set; }
 
         public Request(HttpListenerContext context)
         {
             URL = new SimpleRouter.URL(context.Request.Url);
+            Method = context.Request.HttpMethod;
             Keys = new Dictionary<string, string>();
             Query = context.Request.QueryString;
+            InputStream = context.Request.InputStream;
+        }
+
+        public T DeserializeJSON<T>()
+        {
+            string body = new StreamReader(InputStream).ReadToEnd();
+            return JsonConvert.DeserializeObject<T>(body);
         }
     }
 
@@ -265,11 +178,13 @@ namespace SimpleRouter
     {
         private HttpListenerContext context;
         public bool Complete { get; protected set; }
+        public WebHeaderCollection Headers { get; protected set; }
 
         public Response(HttpListenerContext context)
         {
             this.context = context;
             Complete = false;
+            Headers = context.Response.Headers;
         }
 
         public void ContentType(string contentType)
@@ -296,7 +211,6 @@ namespace SimpleRouter
 
         public void Send(string text)
         {
-
             Send(System.Text.Encoding.UTF8.GetBytes(text));
         }
 
